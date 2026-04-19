@@ -1,51 +1,73 @@
-//well
-byte relay8 = 4;
-//submersible pump
-byte relay7 = 5;
-//led reflector
-byte relay6 = 6;
-//empty
-byte relay5 = 7;
-//empty
-byte relay4 = 8;
-//empty
-byte relay3 = 9;
-//12V ball vale - bidirectional movement
-byte relay2 = 10;
-//12V DC to DC converter
-byte relay1 = 11;
+#include <SoftwareSerial.h>
 
-byte quarterTankLevel = A1;
-byte halfTankLevel = A2;
-byte quaterToFullTankLevel = A3;
-byte fullTankLevel = A4;
+//well pulse relay
+const byte relay8 = 4;
+//submersible pump relay
+const byte relay7 = 5;
+//led reflector
+const byte relay6 = 6;
+//hidro
+const byte relay5 = 7;
+//empty
+const byte relay4 = 8;
+//12V ball vale - bidirectional movement
+const byte relay3 = 9;
+//12V DC to DC converter
+const byte relay2 = 10;
+//dead
+//byte relay1 = 11;
+
+const byte builtInLed = 13;
+
+//ultrasonic sensor pins
+const byte powerPin = A0;
+unsigned char data[4]={};
+int distanceInMillimeter = -1;
+SoftwareSerial mySerial(12, 11);
 
 // to detect the signal from the flow detector
-byte sensorInterrupt = 0;
-byte sensorPin       = 2                                                              ;
+const byte sensorInterrupt = 0;
+const byte sensorPin       = 2;
 
 bool isWellIdle = true;
 bool isWellActive = false;
+bool isPumpActive = false;
 bool irrigationActive = false;
-volatile byte pulseCount;  
+bool ledState = false;
+volatile byte pulseCount;
+int totalPulseCountInPeriod = 0;  
 unsigned long oldTime;
+//it starts with value 4 to make sure that well will not be switched on immediatelly
+byte tankLevel = 4;
+//version number
+//const String versionNumber = "2025-04-22";
+/*
+Insterrupt Service Routine
+ */
+void pulseCounter()
+{
+  // Increment the pulse counter
+  pulseCount++;
+}
 
 void setup()
 {
   // Initialize a serial connection for reporting values to the host
   Serial.begin(9600);
-     
   pinMode(sensorInterrupt, INPUT);
   digitalWrite(sensorInterrupt, HIGH);
 
-  pinMode(quarterTankLevel, INPUT_PULLUP);
-  pinMode(halfTankLevel, INPUT_PULLUP);
-  pinMode(quaterToFullTankLevel, INPUT_PULLUP);
-  pinMode(fullTankLevel, INPUT_PULLUP);
+  pinMode(builtInLed, OUTPUT);
 
-  pinMode(relay1, OUTPUT);
+  pinMode(powerPin, OUTPUT);
+  digitalWrite(powerPin, LOW);
+  delay(2500);
+
+  mySerial.begin(9600);
+
+  /*pinMode(relay1, OUTPUT);
   digitalWrite(relay1, HIGH);
-  delay(250);
+  delay(250);*/
   pinMode(relay2, OUTPUT);
   digitalWrite(relay2, HIGH);
   delay(250);
@@ -75,6 +97,8 @@ void setup()
   // Configured to trigger on a FALLING state change (transition from HIGH
   // state to LOW state)
   attachInterrupt(sensorInterrupt, pulseCounter, FALLING);
+  // close the valve to make sure its in corrrectly known position
+  executeCommand(105);
 }
 
 //gives back the actual state of the pin so we do not need to store it
@@ -104,38 +128,40 @@ void executeCommand(int command)
 {
   if (command == 40) {
     changeWellState();
-
   } else if(command == 50) {
       digitalWrite(relay7, LOW);
   } else if(command == 55) {
       digitalWrite(relay7, HIGH);
-      
   } else if(command == 60) {
       digitalWrite(relay6, LOW);
   } else if(command == 65) {
       digitalWrite(relay6, HIGH);
-
   } else if(command == 70) {
       digitalWrite(relay5, LOW);
   } else if(command == 75) {
       digitalWrite(relay5, HIGH);
-
   } else if(command == 80) {
       digitalWrite(relay4, LOW);
   } else if(command == 85) {
       digitalWrite(relay4, HIGH);
-
   } else if(command == 90) {
       digitalWrite(relay3, LOW);
   } else if(command == 95) {
       digitalWrite(relay3, HIGH);
-
   } else if(command == 100) {
       activateBallValve(true);
       //digitalWrite(relay2, LOW);
   } else if(command == 105) {
       activateBallValve(false);
       //digitalWrite(relay2, HIGH);
+  } else if(command == 200) {
+      //increase trigger value
+      //currently does nothing
+  } else if(command == 210) {
+      //decrease trigger value
+      //currently does nothing
+  } else if(command == 999) {
+      sendDebugMessage();
   }
   //in all other cases or after all execution update the master
   sendStatusUpdate();
@@ -159,25 +185,6 @@ void activateBallValve(bool direction) {
   digitalWrite(relay3, HIGH);
 }
 
-int readWaterTankLevel() {
-  //We check two levels at the same time to make sure there is no malfunction
-  //The output pins were pulled in the setup section. They will be pulled up via a 10k
-  //resistor so when the water allows electricity to flow their value will be 1.
-  //We need to check the system after it went live due to limescale can ruine the detection.
-  if (analogRead(fullTankLevel) <= 500 && analogRead(quaterToFullTankLevel) <= 500) {
-    //we are full
-    return 4;
-  } else if (analogRead(quaterToFullTankLevel) <= 500 && analogRead(halfTankLevel) <= 500) {
-    return 3;
-  } else if (analogRead(halfTankLevel) <= 500 && analogRead(quarterTankLevel) <= 500) {
-    return 2;
-  } else if (analogRead(quarterTankLevel) <= 500) {
-    return 1;
-  } else {
-    //this should not happen                                                                                                                                                                                                                                                                
-    return -1;
-  }  
-}
 //Message will look like:
 //tank status 1-4 25-50-75-100%
 //relay 8-5
@@ -186,7 +193,7 @@ int readWaterTankLevel() {
 void sendStatusUpdate()
 {
   String message = "response:";
-  message = message + String(readWaterTankLevel()) + ";"; 
+  message = message + String(tankLevel) + ";"; 
   if (irrigationActive) {
     message = message + "0;";
   } else {
@@ -208,11 +215,107 @@ void sendStatusUpdate()
     message = message + "0;";
   }
   if (isWellActive) {
-    message = message + "1;";
-  } else {
     message = message + "0;";
+  } else {
+    message = message + "1;";
   }
   Serial.println(message);
+}
+
+void sendDebugMessage()
+{
+  String debugMessage = "debugMessage:";
+  debugMessage += "isWellIdle=" + String(isWellIdle) + ";";
+  debugMessage += "isWellActive=" + String(isWellActive) + ";";
+  debugMessage += "isPumpActive=" + String(isPumpActive) + ";";
+  debugMessage += "irrigationActive=" + String(irrigationActive) + ";";
+  debugMessage += "tankLevel=" + String(tankLevel) + ";";
+  debugMessage += "totalPulseCountInPeriod=" + String(totalPulseCountInPeriod) + ";";
+  debugMessage += "pulseCount=" + String(pulseCount) + ";";
+  debugMessage += "distanceInMillimeter=" + String(distanceInMillimeter) + ";";
+  Serial.println(debugMessage);
+}
+
+void sendDebugInformationMessage(String paramMessage)
+{
+  String debugMessage = "debugMessage:" + paramMessage;
+  Serial.println(debugMessage);
+}
+
+void setLedState() {
+  if (ledState) {
+    digitalWrite(builtInLed, HIGH);
+    //Serial.println("Led high");
+    ledState = false;
+  } else {
+    digitalWrite(builtInLed, LOW);
+    //Serial.println("Led low");
+    ledState = true;
+  }
+  delay(1000);
+}
+
+void doCalculation() {
+  float distance;
+  if(data[0]==0xff)
+    {
+      int sum;
+      sum = (data[0]+data[1]+data[2])&0x00FF;
+      if(sum == data[3])
+      {
+        distance=(data[1]<<8)+data[2];
+        distanceInMillimeter = distance;
+        if(distance > 30) {
+            if (distance <= 200) {
+              tankLevel = 4;
+            } else if (distance <= 400) {
+              tankLevel = 3;
+            } else if (distance <= 600) {
+              tankLevel = 2;
+            } else if (distance <= 800) {
+              tankLevel = 1;
+            }
+          //Serial.print("distance[/10 for centimeter]=");
+          //Serial.println(distance);
+          } else {
+              tankLevel = 0;
+              //Serial.println("Below the lower limit");
+          }
+      } else {
+        //Serial.println("ERROR! Unable to read water level sensor!");
+      }
+    }
+}
+
+void emptySerialBuffer() {
+  while (mySerial.available()) {
+    mySerial.read();
+  }
+}
+
+void changeCommStatus() {
+  //Serial.println("Powering ON ultrasonic sensor.");
+  digitalWrite(powerPin, HIGH);
+
+  for(int w=0; w<=20000; w++) {
+    delay(150);
+    //read the tanklevel
+    if (mySerial.available()) {
+      if (mySerial.read()==0xFF) {
+        data[0] = 0xFF;
+        for(int i=1;i<4;i++) {
+          data[i] = mySerial.read();
+        }
+        doCalculation();
+        memset(data, 0, sizeof(data));
+      }
+    }
+    w+= 150;
+  }
+
+  //Serial.println("Powering OFF ultrasonic sensor.");
+  digitalWrite(powerPin, LOW);
+  emptySerialBuffer();
 }
 
 /**
@@ -222,47 +325,66 @@ void loop()
 {
   if (Serial.available()){
     String incoming = Serial.readString();
-    //Serial.print("Serial incoming was : ");
     //Serial.print();
     if (incoming.indexOf("command:") > -1) {
       String commandNumber = incoming.substring(incoming.indexOf(":") +1 );
       executeCommand(commandNumber.toInt());
     } else {
-      Serial.println("not valid command!");
+      Serial.print("Incoming command:");
+      Serial.print(incoming);
+      Serial.println("-is not valid command!");
     }
   }
 
-  //count the pulses for two minutes making sure that the well is in idle mode
-  if((millis() - oldTime) > 120000) {
-    detachInterrupt(sensorInterrupt);
-    if (pulseCount == 0) {
-      //Serial.println("well IS idle ...");
-      isWellIdle = true;
-    } else {
-      //Serial.println("well IS NOT idle ...");
+  //Serial.println("After serial check...");
+  if(pulseCount >= 20) {
+    totalPulseCountInPeriod = totalPulseCountInPeriod + pulseCount;
+    pulseCount = 0;
+    oldTime = millis();
+  }
+  //Serial.println("After pulseCount check...");
+  if (totalPulseCountInPeriod >= 500) {
+      //Serial.println("Pulse count > 0 setting well variables...");
       isWellIdle = false;
       isWellActive = true;
+  }
+
+  //count the pulses for two minutes making sure that the well is in idle mode 90000
+  if((millis() - oldTime) > 90000) {
+    changeCommStatus();
+    detachInterrupt(sensorInterrupt);
+    if (totalPulseCountInPeriod <= 100) {
+      //Serial.println("well IS idle ...");
+      isWellIdle = true;
     }
     oldTime = millis();   
 
-    //the resevoir is full and the well is idle we need to switch it off.
-    if (readWaterTankLevel() == 4 && isWellIdle && isWellActive) {
-      //this means we need to switch off the well
-      executeCommand(40);
+    //the resevoir is full or we have an error and the well is idle but active we need to switch it off.
+    if (tankLevel == 4 || tankLevel == 0) {
+      if (isWellIdle && isWellActive) {
+        //this means we need to switch OFF the well
+        executeCommand(40);
+      }
+    } else {
+      if (isWellIdle && !isWellActive) {
+        //this means we need to switch ON the well
+        executeCommand(40);
+      }        
     }
     // Reset the pulse counter so we can start incrementing again
-    pulseCount = 0;
-    attachInterrupt(sensorInterrupt, pulseCounter, FALLING);
+    totalPulseCountInPeriod = 0;
+    attachInterrupt(sensorInterrupt, pulseCounter, CHANGE);
   }
-  //Serial.println("pulseCount : " + String(pulseCount));
-  delay(1000);
-}
-
-/*
-Insterrupt Service Routine
- */
-void pulseCounter()
-{
-  // Increment the pulse counter
-  pulseCount++;
+  //this means we are at 1/4
+  if (tankLevel < 2) {
+    //we need to switch off the hidrofor
+    digitalWrite(relay5, HIGH);
+    //we need to switch off the irrigation
+    if(irrigationActive){   
+      sendDebugInformationMessage("Water tanklevel is less then 2, switching irrigation off!");
+      sendDebugMessage();
+      executeCommand(105);
+    }
+  }
+  setLedState();
 }
