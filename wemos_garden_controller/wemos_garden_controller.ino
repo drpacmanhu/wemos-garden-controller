@@ -11,26 +11,25 @@ String relay6 = "OFF";
 String relay5 = "OFF";
 String irrigationStatus = "OFF";
 String lastReceivedMessage = "None";
+String lastDebugMessage = "None";
 byte currentTankLevel = 0;
 bool manualOverride = false;
 //error indicator led
 const byte errorIndicator = D7;
 bool doWeHaveAnError = true;
 //wifi settings
-const char* ssid     = "<YOUR WIFI NAME>";
-const char* password = "<YOUR WIFI PASSWORD>";
+const char* ssid     = "";
+const char* password = "";
 // network less mode
 bool doWeHaveNetwork = false;
 //the server address where we upload the data
-const char* cloudServerAddress = "<YOUR CLOUD SERVER>";
+const char* cloudServerAddress = "iot-revolution.hu";
 //when true the unit sends data to the cloud server as well
-bool sendDataToCloud = false;
-// loopCounterForReportingToCloud we would like to report the status in every 10 minutes
-int loopCounterForReportingToCloud = 10;
+bool sendDataToCloud = true;
 //wifi signal strength
 int wifiSignalStrength = 0;
 //version number
-const String versionNumber = "2023-01-25";
+const String versionNumber = "2023-07-26";
 //this is the OTA enable variables
 ESP8266WebServer server;
 //set this value by default to false as the OTA timeout is 5 minutes
@@ -42,13 +41,14 @@ WiFiUDP ntpUDP;
 const long utcOffsetInSeconds = 3600;
 NTPClient timeClient(ntpUDP, "hu.pool.ntp.org", utcOffsetInSeconds);
 String lastRebootWas = "Unknown";
-unsigned long oldTime;
+
 unsigned long ledLampTimer;
+unsigned long submergedPumpTimer;
 /*
    Start OTA.
 */
 void startOTA() {
-  ArduinoOTA.setPassword("<YOUR WEMOS PASSWORD>");
+  ArduinoOTA.setPassword("WemosLetMeIn_2019%");
   ArduinoOTA.onStart([]() {
     String type;
     if (ArduinoOTA.getCommand() == U_FLASH) {
@@ -111,6 +111,12 @@ void sendCommand(String command) {
     sendToSerial(100);
   } else if(command == "irrigationOFF") {
     sendToSerial(105);
+  } else if(command == "increaseTriggerValue") {
+    sendToSerial(200);
+  } else if(command == "decreaseTriggerValue") {
+    sendToSerial(210);
+  } else if(command == "getDebugMessage") {
+    sendToSerial(999);
   }
 }
 
@@ -122,6 +128,8 @@ void sendCommand(String command) {
 void setLocalVariablesBasedOnIncomingData(String value, byte index) {
   if (index == 0) {
     //this is the tank current level
+    //this is an error flow.
+    currentTankLevel = 0;
     if (value == "1") {
       currentTankLevel = 25;
     } else if (value == "2") {
@@ -130,9 +138,6 @@ void setLocalVariablesBasedOnIncomingData(String value, byte index) {
       currentTankLevel = 75;
     } else if (value == "4") {
       currentTankLevel = 100;
-    } else if (value == "-1") {
-      //this is an error flow.
-      currentTankLevel = -1;
     }
   } else if (index == 1) {
     if (value == "1") {
@@ -168,18 +173,25 @@ void setLocalVariablesBasedOnIncomingData(String value, byte index) {
 }
 
 void parseMessage(String paramMessage) {
-  lastReceivedMessage = "";
-  byte processedValue = 0;
-  if (paramMessage.indexOf(";") >= 1 && paramMessage.length() > 8) {
-    while (paramMessage.indexOf(";") >= 1)
-    {
-      lastReceivedMessage = lastReceivedMessage + paramMessage.substring(0,paramMessage.indexOf(";"));
-      setLocalVariablesBasedOnIncomingData(paramMessage.substring(0,paramMessage.indexOf(";")), processedValue);
-      paramMessage = paramMessage.substring(paramMessage.indexOf(";")+1);
-      processedValue++;
-    }
+  if (paramMessage.lastIndexOf("debugMessage") >= 0){
+    lastDebugMessage = paramMessage;
+    lastDebugMessage.replace(";", "</br>");
+    uploadDataToServer(lastDebugMessage);   
   } else {
-      //TODO send a warning message to the cloud to notify the user
+    lastReceivedMessage = paramMessage;
+    byte processedValue = 0;
+    if (paramMessage.indexOf(";") >= 1 && paramMessage.length() > 8) {
+      paramMessage = paramMessage.substring(paramMessage.indexOf(":")+1, paramMessage.length());
+      while (paramMessage.indexOf(";") >= 1)
+      {
+        setLocalVariablesBasedOnIncomingData(paramMessage.substring(0,paramMessage.indexOf(";")), processedValue);
+        paramMessage = paramMessage.substring(paramMessage.indexOf(";")+1);
+        processedValue++;
+      }
+      uploadDataToServer("");
+    } else {
+        //TODO send a warning message to the cloud to notify the user
+    }
   }
 }
 
@@ -189,7 +201,7 @@ void requestDataFromArduino() {
   if (Serial.available()) {
       Serial.readString();
   }
-  sendToSerial(200);
+  sendToSerial(900);
   int loopCounter = 0;
   while (loopCounter <= 50) {
     if (Serial.available()) {
@@ -229,6 +241,7 @@ void initWebServer() {
     if (relay7 == "OFF") {
       sendCommand("relay7ON");
       relay7 = "ON";
+      submergedPumpTimer = millis();
     } else {
       sendCommand("relay7OFF");
       relay7 = "OFF";
@@ -273,7 +286,17 @@ void initWebServer() {
   server.on("/getData", []() {
     requestDataFromArduino();
     server.send(200, "text/html", getRedirectWebPage());
+  });
+
+  server.on("/getDebugMessage", []() {
+    sendCommand("getDebugMessage");
+    server.send(200, "text/html", getRedirectWebPage());
   });  
+
+  server.on("/deleteDebugMessage", []() {
+    lastDebugMessage = "Deleted";
+    server.send(200, "text/html", getRedirectWebPage());
+  }); 
 
   server.on("/manualOverride", []() {
     if (manualOverride) {
@@ -305,8 +328,20 @@ void initWebServer() {
   });
 
   server.on("/help", []() {
-    server.send(200, "text/plain", "Commands are: manualOverride / setflag / restart / receiveData / summerMode / sendDataToCloud");
+    server.send(200, "text/plain", "Commands are: manualOverride / setflag / restart / receiveData / summerMode / sendDataToCloud / getDebugMessage / deleteDebugMessage");
   });
+
+  server.on("/increaseTriggerValue", []() {
+    sendCommand("increaseTriggerValue");
+    server.send(200, "text/html", getRedirectWebPage());
+  });
+
+  server.on("/decreaseTriggerValue", []() {
+    sendCommand("decreaseTriggerValue");
+    server.send(200, "text/html", getRedirectWebPage());
+  });
+
+  
 
   server.begin();
 }
@@ -342,11 +377,27 @@ String getWebPage() {
   webPage = webPage + "<form method=\"post\" action=/getData><input id=\"getData\" type=\"submit\" value=\"submit\" style=\"width:100%\"></form>";
   webPage = webPage + "</td></tr>";
 
+  webPage = webPage + "<tr><td>DebugInfo</td><td>";
+  webPage = webPage + "<form method=\"post\" action=/getDebugMessage><input id=\"getDebugMessage\" type=\"submit\" value=\"submit\" style=\"width:100%\"></form>";
+  webPage = webPage + "</td></tr>";
+
   webPage = webPage + "<tr><td>Last Rec. Msg.</td><td>";
   webPage = webPage + lastReceivedMessage;
   webPage = webPage + "</td></tr>";
 
-  webPage = webPage + "<tr><td>Tank status</td><td>" + String(currentTankLevel) + "</td></tr>";
+  webPage = webPage + "<tr><td>Last Debug. Msg.</td><td>";
+  webPage = webPage + lastDebugMessage;
+  webPage = webPage + "</td></tr>";
+
+  webPage = webPage + "<tr><td>Tank status</td><td>" + currentTankLevel + "</td></tr>";
+
+  webPage = webPage + "<tr><td>increaseTriggerValue</td><td>";
+  webPage = webPage + "<form method=\"post\" action=/increaseTriggerValue><input id=\"increaseTriggerValue\" type=\"submit\" value=\"submit\" style=\"width:100%\"></form>";
+  webPage = webPage + "</td></tr>";
+
+  webPage = webPage + "<tr><td>decreaseTriggerValue</td><td>";
+  webPage = webPage + "<form method=\"post\" action=/decreaseTriggerValue><input id=\"decreaseTriggerValue\" type=\"submit\" value=\"submit\" style=\"width:100%\"></form>";
+  webPage = webPage + "</td></tr>";
 
   webPage = webPage + "<tr><td>Send data to cloud</td><td>";
   if (sendDataToCloud) {
@@ -369,6 +420,9 @@ String getWebPage() {
 }
 
 String getWifiSignalStrenght() {
+  if (doWeHaveNetwork && WiFi.status() == WL_CONNECTED) {
+    wifiSignalStrength = WiFi.RSSI();
+  }
   String signal = "None";
   if (wifiSignalStrength <= 65 ) {
     signal = "| | | |";
@@ -403,7 +457,7 @@ void connectToWifi() {
     //Serial.println("Connecting to WIFI...");
     connectionLoop ++;
     if (connectionLoop > 30) {
-      Serial.println("Unable to connect to WIFI network...");
+      //Serial.println("Unable to connect to WIFI network...");
       doWeHaveAnError = true;
       break;
       //ESP.restart("Wifi signal was too low or unavailable!");
@@ -417,9 +471,9 @@ void connectToWifi() {
   }
 }
 
-void uploadDataToServer() {
-  //if we do not have network we quit from this method
-  if (doWeHaveNetwork == false) {
+void uploadDataToServer(String paramMessage) {
+  //if these condintions are not met we exit from function
+  if (doWeHaveNetwork == false || sendDataToCloud == false) {
     return;
   }
   String Link = "/wemos_garden_controller/reportStatus.php";
@@ -451,19 +505,22 @@ void uploadDataToServer() {
   //Serial.print("requesting URL: ");
   //Serial.println(cloudServerAddress);
 
-  //this value here is a secret key leave it as it is
-  String messageContent = "{\"currentTankLevel\":\"" + String(currentTankLevel) + "\"";
-  messageContent = messageContent + "\"irrigationStatus\":\"" + irrigationStatus + "\"";
-  messageContent = messageContent + "\"relay5\":\"" + relay5 + "\"";
-  messageContent = messageContent + "\"relay6\":\"" + relay6 + "\"";
-  messageContent = messageContent + "\"relay7\":\"" + relay7 + "\"";
-  messageContent = messageContent + "\"relay8\":\"" + relay8 + "\"";  
-  messageContent = messageContent + "\"lastReceivedMessage\":\"" + lastReceivedMessage + "\"}";  
-
+  //if paramMessage is empty we create the message content otherwise send what we received
+  String messageContent = paramMessage;
+  if (paramMessage.length() < 1) {
+    //this value here is a secret key leave it as it is
+    messageContent = "{\"currentTankLevel\":\"" + String(currentTankLevel) + "\"";
+    messageContent = messageContent + "\"irrigationStatus\":\"" + irrigationStatus + "\"";
+    messageContent = messageContent + "\"relay5\":\"" + relay5 + "\"";
+    messageContent = messageContent + "\"relay6\":\"" + relay6 + "\"";
+    messageContent = messageContent + "\"relay7\":\"" + relay7 + "\"";
+    messageContent = messageContent + "\"relay8\":\"" + relay8 + "\"";  
+    messageContent = messageContent + "\"lastReceivedMessage\":\"" + lastReceivedMessage + "\"}";  
+    //Serial.println("Postmessage will be : " + postMessageContent);
+    //Serial.print("postMessage length : ");
+    //Serial.println(postMessageContent.length());
+  }
   String postMessageContent = "message=" + urlEncode(messageContent);
-  //Serial.println("Postmessage will be : " + postMessageContent);
-  //Serial.print("postMessage length : ");
-  //Serial.println(postMessageContent.length());
 
   httpsClient.println("POST " + String(Link) + " HTTP/1.1");
   httpsClient.println("Host: " + String(cloudServerAddress));
@@ -515,10 +572,6 @@ void flashActiveLed() {
 }
 
 void setup() {
-  // Open serial communications and wait for port to open:
-  Serial.begin(9600);
-  //Serial.println("Setup started...");
-
   ESP.wdtDisable();
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(errorIndicator, OUTPUT);
@@ -533,9 +586,9 @@ void setup() {
   connectToWifi();
   if (doWeHaveNetwork) {
     //Serial.println("Ready");
-    Serial.println("WiFi connected");
+    /*Serial.println("WiFi connected");
     Serial.println("IP address: ");
-    Serial.println(WiFi.localIP());
+    Serial.println(WiFi.localIP());*/
     //Serial.println("MAC address: ");
     //Serial.println(WiFi.macAddress());
     //Serial.println("Starting OTA listener...");
@@ -565,10 +618,27 @@ void setup() {
     lastRebootWas = String(year()) + "-" + String(month()) + "-" + String(day()) + ":" + String(hour()) +":"+ String(minute()) +":" + String(second());
     //Serial.println("lastRebootWas: " + lastRebootWas);
   } else {
-    Serial.println("We are in network less mode...");
+    //Serial.println("We are in network less mode...");
   }
+  //give arduio some time
+  delay(5000);
+  // Open serial communications and wait for port to open:
+  Serial.begin(9600);
+  //Serial.println("Setup started...");
 }
 
+void executeAutomation() {
+  //switch offsubmersed pump after 10 minutes to makes sure no dry run happens
+  if (relay7 == "ON" && (millis() - submergedPumpTimer >= 600000)) {
+    sendCommand("relay7OFF");
+    uploadDataToServer("Switching submerged pump off with timeout!");
+  }
+  //if led lamp is on for 5 minutes switch it off
+  if (relay6 == "ON" && (millis() - ledLampTimer >= 300000)) {
+    sendCommand("relay6OFF");
+    uploadDataToServer("Switching led lamp off with timeout!");
+  }
+}
 /*
    The main loop collects the data, send it to the server then set the relay based on the given value.
 */
@@ -599,38 +669,7 @@ void loop() {
     }
   }
 
-  if (doWeHaveNetwork && sendDataToCloud) {
-    //we only deal with the counter if this is true
-    //making sure that the counter will not overflow
-    if (loopCounterForReportingToCloud >= 10) {
-      loopCounterForReportingToCloud = 0;
-      uploadDataToServer();
-    } else {
-      //Serial.print("loopCounterForReportingToCloud is : ");
-      //Serial.println(loopCounterForReportingToCloud);
-      loopCounterForReportingToCloud++;
-    }
-  }
-
-  //we check for automation events in every two minutes.
-  if((millis() - oldTime) > 120000) {
-    //this means we have an error we shold switch the well off
-    if (currentTankLevel == -1) {
-      sendCommand("relay8OFF");
-    }
-    //switch on / off the submersed pump
-    //we switch on the pump between 1 and 2 AM
-    if (hour() > 1 && hour() < 2 ) {
-      sendCommand("relay7ON");
-    } else {
-      sendCommand("relay7OFF");
-    }
-    //if led lamp is on for 5 minutes switch it off
-    if (ledLampTimer > 300000) {
-      sendCommand("relay6OFF");
-    }
-    oldTime = millis();   
-  }
+  executeAutomation();
 
   if (Serial.available()) {
     String inputFromSerial = Serial.readString();
