@@ -18,8 +18,8 @@ bool manualOverride = false;
 const byte errorIndicator = D7;
 bool doWeHaveAnError = true;
 //wifi settings
-const char* ssid     = "";
-const char* password = "";
+char* ssid = "xxxxxxxxxx";
+const char* password = "xxxxxxxxxxxxxx";
 // network less mode
 bool doWeHaveNetwork = false;
 //the server address where we upload the data
@@ -29,7 +29,7 @@ bool sendDataToCloud = true;
 //wifi signal strength
 int wifiSignalStrength = 0;
 //version number
-const String versionNumber = "2023-07-26";
+const String versionNumber = "2026-06-03";
 //this is the OTA enable variables
 ESP8266WebServer server;
 //set this value by default to false as the OTA timeout is 5 minutes
@@ -44,6 +44,7 @@ String lastRebootWas = "Unknown";
 
 unsigned long ledLampTimer;
 unsigned long submergedPumpTimer;
+unsigned long irrigationTimer;
 /*
    Start OTA.
 */
@@ -92,9 +93,10 @@ void sendToSerial(int command) {
 //sends the command to the arduino using serial
 //these are related to Pin numbers
 void sendCommand(String command) {
-  if (command == "relay8ON" || command == "relay8OFF") {
-    //same as Off as this is an impulse switch
+  if (command == "relay8ON") {
     sendToSerial(40);
+  } else if(command == "relay8OFF") {
+    sendToSerial(45);
   } else if(command == "relay7ON") {
     sendToSerial(50);
   } else if(command == "relay7OFF") {
@@ -111,10 +113,6 @@ void sendCommand(String command) {
     sendToSerial(100);
   } else if(command == "irrigationOFF") {
     sendToSerial(105);
-  } else if(command == "increaseTriggerValue") {
-    sendToSerial(200);
-  } else if(command == "decreaseTriggerValue") {
-    sendToSerial(210);
   } else if(command == "getDebugMessage") {
     sendToSerial(999);
   }
@@ -127,17 +125,10 @@ void sendCommand(String command) {
 //relay 2-1 is for ball valve
 void setLocalVariablesBasedOnIncomingData(String value, byte index) {
   if (index == 0) {
-    //this is the tank current level
-    //this is an error flow.
-    currentTankLevel = 0;
     if (value == "1") {
-      currentTankLevel = 25;
-    } else if (value == "2") {
-      currentTankLevel = 50;
-    } else if (value == "3") {
-      currentTankLevel = 75;
-    } else if (value == "4") {
-      currentTankLevel = 100;
+      currentTankLevel = 1;
+    } else {
+      currentTankLevel = 0;
     }
   } else if (index == 1) {
     if (value == "1") {
@@ -276,6 +267,7 @@ void initWebServer() {
     if (irrigationStatus == "OFF") {
       sendCommand("irrigationON");
       irrigationStatus = "ON";
+      irrigationTimer = millis();
     } else {
       sendCommand("irrigationOFF");
       irrigationStatus = "OFF";
@@ -365,7 +357,7 @@ String getWebPage() {
   webPage = webPage + "<form method=\"post\" action=/relay6><input id=\"relay6\" type=\"submit\" value=\"submit\" style=\"width:100%\"></form>";
   webPage = webPage + "</td></tr>";
 
-  webPage = webPage + "<tr><td>Empty - " + relay5 + "</td><td>";
+  webPage = webPage + "<tr><td>Hidrofor - " + relay5 + "</td><td>";
   webPage = webPage + "<form method=\"post\" action=/relay5><input id=\"relay5\" type=\"submit\" value=\"submit\" style=\"width:100%\"></form>";
   webPage = webPage + "</td></tr>";
 
@@ -390,14 +382,6 @@ String getWebPage() {
   webPage = webPage + "</td></tr>";
 
   webPage = webPage + "<tr><td>Tank status</td><td>" + currentTankLevel + "</td></tr>";
-
-  webPage = webPage + "<tr><td>increaseTriggerValue</td><td>";
-  webPage = webPage + "<form method=\"post\" action=/increaseTriggerValue><input id=\"increaseTriggerValue\" type=\"submit\" value=\"submit\" style=\"width:100%\"></form>";
-  webPage = webPage + "</td></tr>";
-
-  webPage = webPage + "<tr><td>decreaseTriggerValue</td><td>";
-  webPage = webPage + "<form method=\"post\" action=/decreaseTriggerValue><input id=\"decreaseTriggerValue\" type=\"submit\" value=\"submit\" style=\"width:100%\"></form>";
-  webPage = webPage + "</td></tr>";
 
   webPage = webPage + "<tr><td>Send data to cloud</td><td>";
   if (sendDataToCloud) {
@@ -450,14 +434,14 @@ void connectToWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   int connectionLoop = 0;
-  //Serial.println("Trying to connect to wifi...");
+  Serial.println("Trying to connect to wifi...");
   //if we cannot connect to wifi within watchdog period restart the board
   while (WiFi.status() != WL_CONNECTED) {
     delay(250);
-    //Serial.println("Connecting to WIFI...");
+    Serial.println("Connecting to WIFI...");
     connectionLoop ++;
     if (connectionLoop > 30) {
-      //Serial.println("Unable to connect to WIFI network...");
+      Serial.println("Unable to connect to WIFI network...");
       doWeHaveAnError = true;
       break;
       //ESP.restart("Wifi signal was too low or unavailable!");
@@ -572,6 +556,7 @@ void flashActiveLed() {
 }
 
 void setup() {
+  Serial.println("Setup started...");
   ESP.wdtDisable();
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(errorIndicator, OUTPUT);
@@ -582,13 +567,13 @@ void setup() {
 
   flashActiveLed();
   //start wifi connection
-  //Serial.println("Checking for wifi network...");
+  Serial.println("Checking for wifi network...");
   connectToWifi();
   if (doWeHaveNetwork) {
     //Serial.println("Ready");
-    /*Serial.println("WiFi connected");
-    Serial.println("IP address: ");
-    Serial.println(WiFi.localIP());*/
+    uploadDataToServer("WiFi connected!");
+    //Serial.println("IP address: ");
+    //Serial.println(WiFi.localIP());
     //Serial.println("MAC address: ");
     //Serial.println(WiFi.macAddress());
     //Serial.println("Starting OTA listener...");
@@ -611,6 +596,7 @@ void setup() {
       delay(1000);
       ntpLoopCounter++;
     }
+    uploadDataToServer("Time was set to:" + String(milliseconds));
     setTime(milliseconds);
     /*milliseconds = NULL;*/
     timeClient.end();
@@ -622,12 +608,17 @@ void setup() {
   }
   //give arduio some time
   delay(5000);
+  // Move this to the begining of the method if you would like to see setup logs!!!
   // Open serial communications and wait for port to open:
   Serial.begin(9600);
-  //Serial.println("Setup started...");
 }
 
 void executeAutomation() {
+  //switch irrigation off after 20 minutes
+  if (irrigationStatus == "ON" && (millis() - irrigationTimer >= 1200000)) {
+    sendCommand("irrigationOFF");
+    uploadDataToServer("Switching irrigation off with timeout!");
+  }
   //switch offsubmersed pump after 10 minutes to makes sure no dry run happens
   if (relay7 == "ON" && (millis() - submergedPumpTimer >= 600000)) {
     sendCommand("relay7OFF");
