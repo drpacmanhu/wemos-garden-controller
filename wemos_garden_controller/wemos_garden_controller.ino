@@ -41,7 +41,7 @@ WiFiUDP ntpUDP;
 const long utcOffsetInSeconds = 3600;
 NTPClient timeClient(ntpUDP, "hu.pool.ntp.org", utcOffsetInSeconds);
 String lastRebootWas = "Unknown";
-byte currentDayOfTheMonth = 1;
+int currentDayOfTheMonth = 1;
 bool midnightIrrigationActive = false;
 
 unsigned long ledLampTimer;
@@ -267,9 +267,7 @@ void initWebServer() {
 
   server.on("/irrigationButton", []() {
     if (irrigationStatus == "OFF") {
-      sendCommand("irrigationON");
-      irrigationStatus = "ON";
-      irrigationTimer = millis();
+      startIrrigation();
     } else {
       sendCommand("irrigationOFF");
       irrigationStatus = "OFF";
@@ -567,6 +565,19 @@ void flashActiveLed() {
   ESP.wdtFeed();
 }
 
+void updateCurrentDayOfTheMonth() {
+  lastRebootWas = String(year()) + "-" + String(month()) + "-" + String(day()) + ":" + String(hour()) +":"+ String(minute()) +":" + String(second());
+  lastRebootWas = lastRebootWas + " DayOfTheMonth: " + String(day());
+  currentDayOfTheMonth = day();
+  uploadDataToServer("Updated currentDayOfTheMonth to : " + String(day()));
+}
+
+void startIrrigation() {
+  irrigationStatus = "ON";
+  irrigationTimer = millis();
+  sendCommand("irrigationON");
+}
+
 void setup() {
   Serial.println("Setup started...");
   ESP.wdtDisable();
@@ -601,6 +612,7 @@ void setup() {
     //Serial.println(milliseconds);
     int ntpLoopCounter = 0;
     while (ntpLoopCounter < 11 && milliseconds < 10000) {
+      uploadDataToServer("Setup method! Trying to update local datetime!");
       timeClient.update();
       long milliseconds = timeClient.getEpochTime();
       //Serial.println("Waiting for new time value...");
@@ -608,15 +620,12 @@ void setup() {
       delay(1000);
       ntpLoopCounter++;
     }
-    uploadDataToServer("Time was set to:" + String(milliseconds));
+    uploadDataToServer("Setup method! Time was set to:" + String(milliseconds));
     setTime(milliseconds);
     /*milliseconds = NULL;*/
     timeClient.end();
     
-    lastRebootWas = String(year()) + "-" + String(month()) + "-" + String(day()) + ":" + String(hour()) +":"+ String(minute()) +":" + String(second());
-    //Serial.println("lastRebootWas: " + lastRebootWas);
-    currentDayOfTheMonth = day(milliseconds);
-    lastRebootWas = lastRebootWas + " DayOfTheMonth: " + currentDayOfTheMonth;
+    updateCurrentDayOfTheMonth();
   } else {
     //Serial.println("We are in network less mode...");
   }
@@ -644,9 +653,10 @@ void executeAutomation() {
     uploadDataToServer("Switching led lamp off with timeout!");
   }
   //initiate irrigation when the day changes
-  if (midnightIrrigationActive && currentDayOfTheMonth != day(millis())) {
+  if (midnightIrrigationActive && currentDayOfTheMonth != day()) {
+    updateCurrentDayOfTheMonth();
     uploadDataToServer("Triggering midnight irrigation!");
-    sendCommand("irrigationON");
+    startIrrigation();
     //once a day verify that we still have connection
     if (WiFi.status() != WL_CONNECTED) {
       connectToWifi();
