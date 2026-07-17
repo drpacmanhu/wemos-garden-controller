@@ -18,8 +18,8 @@ bool manualOverride = false;
 const byte errorIndicator = D7;
 bool doWeHaveAnError = true;
 //wifi settings
-char* ssid = "xxxxxxxxxx";
-const char* password = "xxxxxxxxxxxxxx";
+char* ssid = "Smiths";
+const char* password = "Csomik3_2022!";
 // network less mode
 bool doWeHaveNetwork = false;
 //the server address where we upload the data
@@ -29,7 +29,7 @@ bool sendDataToCloud = true;
 //wifi signal strength
 int wifiSignalStrength = 0;
 //version number
-const String versionNumber = "2026-06-03";
+const String versionNumber = "2026-07-17";
 //this is the OTA enable variables
 ESP8266WebServer server;
 //set this value by default to false as the OTA timeout is 5 minutes
@@ -41,6 +41,8 @@ WiFiUDP ntpUDP;
 const long utcOffsetInSeconds = 3600;
 NTPClient timeClient(ntpUDP, "hu.pool.ntp.org", utcOffsetInSeconds);
 String lastRebootWas = "Unknown";
+byte currentDayOfTheMonth = 1;
+bool midnightIrrigationActive = false;
 
 unsigned long ledLampTimer;
 unsigned long submergedPumpTimer;
@@ -333,6 +335,14 @@ void initWebServer() {
     server.send(200, "text/html", getRedirectWebPage());
   });
 
+  server.on("/midnightIrrigation", []() {
+    if (midnightIrrigationActive) {
+      midnightIrrigationActive = false;
+    } else {
+      midnightIrrigationActive = true;
+    }
+    server.send(200, "text/html", getRedirectWebPage());
+  });
   
 
   server.begin();
@@ -394,6 +404,8 @@ String getWebPage() {
   webPage = webPage + "<tr><td>Wifi Signal : </td><td>" + getWifiSignalStrenght() + "</td></tr>";
   webPage = webPage + "<tr><td>Version Number:</td><td>" + versionNumber + "</td></tr>";
   webPage = webPage + "<tr><td>Manual override:</td><td>" + manualOverride + "</td></tr>";
+  webPage = webPage + "<tr><td>Midnight irrigation:</td><td>" + midnightIrrigationActive + "</td></tr>";
+  
   webPage = webPage + "</table>";
   webPage = webPage + "Reset reason was : " + ESP.getResetReason() + "</br>";
   webPage = webPage + "Last reboot was at: " + lastRebootWas;
@@ -603,6 +615,8 @@ void setup() {
     
     lastRebootWas = String(year()) + "-" + String(month()) + "-" + String(day()) + ":" + String(hour()) +":"+ String(minute()) +":" + String(second());
     //Serial.println("lastRebootWas: " + lastRebootWas);
+    currentDayOfTheMonth = day(milliseconds);
+    lastRebootWas = lastRebootWas + " DayOfTheMonth: " + currentDayOfTheMonth;
   } else {
     //Serial.println("We are in network less mode...");
   }
@@ -628,6 +642,15 @@ void executeAutomation() {
   if (relay6 == "ON" && (millis() - ledLampTimer >= 300000)) {
     sendCommand("relay6OFF");
     uploadDataToServer("Switching led lamp off with timeout!");
+  }
+  //initiate irrigation when the day changes
+  if (midnightIrrigationActive && currentDayOfTheMonth != day(millis())) {
+    uploadDataToServer("Triggering midnight irrigation!");
+    sendCommand("irrigationON");
+    //once a day verify that we still have connection
+    if (WiFi.status() != WL_CONNECTED) {
+      connectToWifi();
+    } 
   }
 }
 /*
